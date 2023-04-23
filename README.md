@@ -5,11 +5,11 @@ between the internal Arduino Nano and the Nextion LCD.  The USB
 serial port is used for control and status reporting.
 
 ## Harware
-It was written for Teensy 2.0, but can be ported to other controllers.
-Although PJRC stopped making Teensy 2.0, the clones can still be purchased.
+It was written for the Teensy 2.0, but can be ported to other controllers.
+Although PJRC stopped making the Teensy 2.0, the clones can still be purchased.
 For communicating with the internal controller and the LCD, you need two
 serial ports. For external/remote communication the built-in USB serial
-port is used. Since Teensy 2.0 only has one harware serial port, 
+port is used. Since the Teensy 2.0 only has one harware serial port, 
 AltSoftSerial is used to emulate one.
 
 This is how I wired it.
@@ -37,9 +37,15 @@ You can issue commands through the USB-serial interface.
 | h | Enter auto detect mode |
 | j | Fan normal |
 | k | Fan max |
+| r | reset |
 | s | Toggle beep |
 | t | Dump status (human readable) |
 | u | Dump status (short form) |
 | v | Toggle verbos mode |
+| 1 | Select ant 1 |
+| 2 | Select ant 2 |
+| 3 | Select ant 3 |
 
-
+Please note that a band selection causes the internal controller to issue an antenna
+selection command based on the settings. If you want a different antenna for the band,
+you need to issue an antenna select command after changing the band.

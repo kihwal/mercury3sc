@@ -20,6 +20,11 @@ This is how I wired it.
 | 9 (sw tx) | Control board pin 3 |
 | 10 (sw rx) | Control board pin 2 |
 
+For the power on/off control, PIN_B0 is used. This is connected to the gate of 
+a 2N7000. The pin 2 and 3 are connected to the soft power signal pins of the
+switching power supply. By grounding the pin measuring 3.3V, the power supply
+is turned on. I connected this pin to the drain of the 2N7000. Its source pin
+is grounded.
 
 ## Control commands
 mercury3sc was written on Arduino 1.8 with the Teensy support package from PJRC.
@@ -37,6 +42,8 @@ You can issue commands through the USB-serial interface.
 | h | Enter auto detect mode |
 | j | Fan normal |
 | k | Fan max |
+| p | Power on |
+| q | Power off |
 | r | reset |
 | s | Toggle beep |
 | t | Dump status (human readable) |
@@ -49,3 +56,5 @@ You can issue commands through the USB-serial interface.
 Please note that a band selection causes the internal controller to issue an antenna
 selection command based on the settings. If you want a different antenna for the band,
 you need to issue an antenna select command after changing the band.
+
+Beep and verbose mode selections are saved to EEPROM.

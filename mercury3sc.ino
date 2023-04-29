@@ -11,6 +11,9 @@
  * 
  * HW serial pins: 8(tx), 7(rx) - Serial1 - Nextion
  * Alt SW serial pins: 9(tx), 10(rx) - SW Serial - Merc III Nano
+ *
+ * PIN_B0 is connected to the gate of a 2N7000 for power on/off control
+ * EEPROM address 0 stores the beep setting.
  */
 
 #define SM_BAUD 57600         // Mercury IIIS's internal baud rate
@@ -18,6 +21,7 @@
 
 #include <string.h>
 #include <AltSoftSerial.h>
+#include <EEPROM.h>
 
 #define LCDSerial Serial1     // serial port for communicating with the Nextion LCD
 AltSoftSerial CTLSerial;      // serial port for communicating with the onboad Arduino Nano
@@ -172,8 +176,17 @@ void setup() {
   LCDSerial.setTimeout(1); // 1ms timeout
   CTLSerial.begin(SM_BAUD);
   CTLSerial.setTimeout(1);
+  pinMode(PIN_B0, OUTPUT);  // amp power control
   pinMode(11, OUTPUT);
   digitalWrite(11, HIGH); // turn on the led
+  digitalWrite(PIN_B0, LOW);  // amp off
+
+  if (EEPROM.read(0) == 0x30) {
+    beep = false;
+  }
+  if (EEPROM.read(1) == 0x30) {
+    debug = true;
+  }
 }
 
 
@@ -302,6 +315,15 @@ void loop() {
         setLcdBand(7);
         sendCtrlMsg("pdia=255");
         break;
+
+      // power on
+      case 'p':
+        digitalWrite(PIN_B0, HIGH);
+        break;
+      // power off
+      case 'q':
+        digitalWrite(PIN_B0, LOW);
+        break;
         
       // reset
       case 'r':
@@ -311,6 +333,11 @@ void loop() {
       // toggle beep
       case 's':
         beep = !beep;
+        if (beep) {
+          EEPROM.write(0, 0x00);
+        } else {
+          EEPROM.write(0, 0x30);
+        }
         break;
 
       // status in human readable form
@@ -328,6 +355,11 @@ void loop() {
         debug = !debug;
         Serial.print("Verbose mode ");
         Serial.println(debug ? "on":"off");
+        if (debug) {
+          EEPROM.write(1, 0x30);
+        } else {
+          EEPROM.write(1, 0x00);
+        }
         break;
         
       // antenna selection

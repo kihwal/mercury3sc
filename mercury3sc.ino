@@ -6,31 +6,43 @@
  * between the internal Arduino Nano and the Nextion LCD.  The USB
  * serial port is used for control and status reporting.
  * 
- * It uses a HW serial on and AltSoftSerial because Teensy 2.0 has
- * only one HW serial port.
+ * The code was written for Raspberry PI Pico based on the RP2040,
+ * which has two UARTs, two processor cores and a USB. Since it is 
+ * a 3.3V device, a level conversion for the existing 5V system is
+ * needed. The pico is powered via the M3s's 5V supply or the USB.
+ * See Fig 16 on page 20 of the official pico manual.
  * 
- * HW serial pins: 8(tx), 7(rx) - Serial1 - Nextion
- * Alt SW serial pins: 9(tx), 10(rx) - SW Serial - Merc III Nano
+ * Serial ports
+ * Serial  : ACM USB serial port
+ * Serial1 : uart0 - GP0(tx), GP1(rx) - Nextion display
+ * Serial2 : uart1 - GP4(tx), GP5(rx) - M3s Nano
  *
- * PIN_B0 is connected to the gate of a 2N7000 for power on/off control
- * EEPROM address 0 stores the beep setting.
+ * GP6 power on/off control. 
+ * GP7 input attenuator level select.
+ * GP25 LED
+ * 
+ * EEPROM 
+ * addr 0 stores the beep setting.
+ * addr 1 stores verbose mode
  */
 
-#define SM_BAUD 57600         // Mercury IIIS's internal baud rate
-#define SM_BUFF_SIZE 64       // Internal receive buffer size
+#define M3S_BAUD 57600         // Mercury IIIS's internal baud rate
+#define M3S_BUFF_SIZE 64       // Internal receive buffer size
+#define M3S_LED 25             // on-board LED pin
+#define M3S_PCTL 6             // Power on/off control pin
+#define M3S_ATTN 7             // Attenuator control pin
 
 #include <string.h>
-#include <AltSoftSerial.h>
 #include <EEPROM.h>
 
-#define LCDSerial Serial1     // serial port for communicating with the Nextion LCD
-AltSoftSerial CTLSerial;      // serial port for communicating with the onboad Arduino Nano
+#define LCDSerial Serial1      // serial port for communicating with the Nextion LCD
+#define CTLSerial Serial2      // serial port for communicating with the onboad Arduino Nano
 
-char buff[SM_BUFF_SIZE];      // receiver buffer
-char outb[128];               // send buffer
-boolean dir = true;           // comm direction. Read from nextion when true.
-boolean beep = true;          // whether to send a beep or not.
-boolean debug = false;        // verbose output
+char buff[M3S_BUFF_SIZE];      // receiver buffer
+char outb[128];                // send buffer
+boolean dir = true;            // comm direction. Read from nextion when true.
+boolean beep = true;           // whether to send a beep or not.
+boolean debug = false;         // verbose output
 
 // Variables to keep track of the amp state.
 int vol, cur, swr, ref, pwr, tmp;
@@ -170,16 +182,25 @@ void setLcdBand(int b) {
   }
 }
 
+
 void setup() {
-  Serial.begin(115200); // USB serial output
-  LCDSerial.begin(SM_BAUD);
+  Serial.begin(115200); // USB serial output. the speed has no meaning.
+  LCDSerial.setRX(1);
+  LCDSerial.setTX(0);
   LCDSerial.setTimeout(1); // 1ms timeout
-  CTLSerial.begin(SM_BAUD);
+  LCDSerial.begin(M3S_BAUD);
+
+  CTLSerial.setRX(5);
+  CTLSerial.setTX(4);
   CTLSerial.setTimeout(1);
-  pinMode(PIN_B0, OUTPUT);  // amp power control
-  pinMode(11, OUTPUT);
-  digitalWrite(11, HIGH); // turn on the led
-  digitalWrite(PIN_B0, LOW);  // amp off
+  CTLSerial.begin(M3S_BAUD);
+
+  pinMode(M3S_PCTL, OUTPUT);  // amp power control
+  pinMode(M3S_ATTN, OUTPUT); 
+  pinMode(M3S_LED,  OUTPUT);
+  digitalWrite(M3S_LED, HIGH); // turn on the led
+
+  digitalWrite(M3S_PCTL, LOW);  // amp off
 
   if (EEPROM.read(0) == 0x30) {
     beep = false;
@@ -214,7 +235,7 @@ void loop() {
       }      
     }
     // timeout, buffer full, or nothing read.
-    if (idx == 0 || (millis() - t) > 10 || idx == SM_BUFF_SIZE) {
+    if (idx == 0 || (millis() - t) > 10 || idx == M3S_BUFF_SIZE) {
       // Commands are much shorter than the buffer. If the buffer is full, it
       // means there is corruption/drop. In 10ms, about 60 chars can be sent at 57.6kbps.
       // A timeout means the terminating sequence will never come.  It is better to simply
@@ -280,7 +301,10 @@ void loop() {
 
     if (beep && cmd != 't' && cmd != 'u' && cmd != 'v')
       sendCtrlMsg("psound");
-      
+
+    digitalWrite(M3S_LED, HIGH);
+    digitalWrite(M3S_LED, LOW);
+
     switch(cmd) {
       // BPF selection
       case 'a':
@@ -318,11 +342,11 @@ void loop() {
 
       // power on
       case 'p':
-        digitalWrite(PIN_B0, HIGH);
+        digitalWrite(M3S_PCTL, HIGH);
         break;
       // power off
       case 'q':
-        digitalWrite(PIN_B0, LOW);
+        digitalWrite(M3S_PCTL, LOW);
         break;
         
       // reset

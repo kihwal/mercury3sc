@@ -24,6 +24,11 @@
  * EEPROM 
  * addr 0 stores the beep setting.
  * addr 1 stores verbose mode
+ * 
+ * Dual core
+ * - core0 takes care of USB. Responsible for receiving data from the 
+ *   LCD and sending to the controller. Takes care of user commands.
+ * - core1 receives data from the controller and relays them to the LCD.
  */
 
 #define M3S_BAUD 57600         // Mercury IIIS's internal baud rate
@@ -38,11 +43,11 @@
 #define LCDSerial Serial1      // serial port for communicating with the Nextion LCD
 #define CTLSerial Serial2      // serial port for communicating with the onboad Arduino Nano
 
-char buff[M3S_BUFF_SIZE];      // receiver buffer
-char outb[128];                // send buffer
-boolean dir = true;            // comm direction. Read from nextion when true.
+char buff[M3S_BUFF_SIZE];      // receiver buffer for the LCD
+char buff1[M3S_BUFF_SIZE];     // receiver buffer for the controller
 boolean beep = true;           // whether to send a beep or not.
 boolean debug = false;         // verbose output
+boolean initialized = false;   // init condition indicator to block core1
 
 // Variables to keep track of the amp state.
 int vol, cur, swr, ref, pwr, tmp;
@@ -64,12 +69,14 @@ void printBuff(char* buff, int len) {
 
 // Send a command to the amp controller
 void sendCtrlMsg(char* msg) {
+  char outb[32];
   sprintf(outb,"%s%c%c%c", msg, 0xff, 0xff, 0xff);
   CTLSerial.print(outb);
 }
 
 // send a command to the LCD
 void sendLcdMsg(char* msg) {
+  char outb[32];
   sprintf(outb,"%s%c%c%c", msg, 0xff, 0xff, 0xff);
   LCDSerial.print(outb);
 }
@@ -154,6 +161,7 @@ void printStatus(boolean human_readable) {
     Serial.print("Temperature(C) : ");
     Serial.println(tmp);
   } else {
+    char outb[32];
     sprintf(outb, "%d %d %d %d %d %d", pwr, ref, swr, vol, cur, tmp);
     Serial.println(outb);
   }
@@ -169,6 +177,7 @@ void printStatus(boolean human_readable) {
 // band7.val is for the auto button, which is turned off whenever a band is
 // selected by this controller.
 void setLcdBand(int b) {
+  char outb[32];
   // clear auto-selected band marker
   for (int i = 6; i <= 12; i++) {
     sprintf(outb, "q%d.picc=1%c%c%c", i, 0xff, 0xff, 0xff);
@@ -193,12 +202,12 @@ void setup() {
   CTLSerial.setRX(5);
   CTLSerial.setTX(4);
   CTLSerial.setTimeout(1);
+  CTLSerial.setFIFOSize(128); // sensor updates come at full speed on tx
   CTLSerial.begin(M3S_BAUD);
 
   pinMode(M3S_PCTL, OUTPUT);  // amp power control
   pinMode(M3S_ATTN, OUTPUT); 
   pinMode(M3S_LED,  OUTPUT);
-  digitalWrite(M3S_LED, HIGH); // turn on the led
 
   digitalWrite(M3S_PCTL, LOW);  // amp off
 
@@ -208,8 +217,73 @@ void setup() {
   if (EEPROM.read(1) == 0x30) {
     debug = true;
   }
+  // signal core1 to continue
+  initialized = true;
 }
 
+void setup1() {
+  // block until core0 init is done.
+  while(!initialized) {
+    delay(1);
+  }
+
+  // Signal init success
+  for (int i = 0; i < 3; i++) {
+    digitalWrite(M3S_LED, HIGH); // turn on the led
+    delay(500);    
+    digitalWrite(M3S_LED, LOW); // turn on the led
+    delay(500);    
+  }
+}
+
+void loop1() {
+  int c, idx;
+  unsigned long t;
+  boolean toSkip = false;
+
+  // read one command at a time from the M3S Nano controller.
+  idx = 0;
+  t = millis();
+  while (1) {
+    c = CTLSerial.read();
+    if (c != -1) {
+      buff1[idx] = (char)c;
+      idx++;
+      // check for the terminal condition
+      if (term_seq(buff, idx)) {
+        break;
+      }      
+    }
+    // timeout, buffer full, or nothing read.
+    if (idx == 0 || (millis() - t) > 10 || idx == M3S_BUFF_SIZE) {
+      // Commands are much shorter than the buffer. If the buffer is full, it
+      // means there is corruption/drop. In 10ms, about 60 chars can be sent at 57.6kbps.
+      // A timeout means the terminating sequence will never come.  It is better to simply
+      // drop it.
+      toSkip = true;
+      break;
+    }
+  }
+
+  // update internal state
+  toSkip = toSkip || updateState(buff1, idx);
+  if (!toSkip) {
+    // Got a command from the controller. Write it to the LCD.
+    LCDSerial.write(buff1, idx);
+  }
+  if (debug) {
+    Serial.print("> ");
+  }
+
+  if (debug) {
+    printBuff(buff1, idx);
+    if (toSkip) {
+      Serial.println("[skipped]");
+    } else {
+      Serial.println(" ");
+    }
+  }
+}
 
 void loop() {
   int c;
@@ -221,10 +295,7 @@ void loop() {
   idx = 0;
   t = millis();
   while (1) {
-    // dir tells it to read from LCD or the controller. It alternates between
-    // the two unless there are more data readily available in the current port.
-    // This is happens a lot when transmitting. 
-    c = (dir) ? LCDSerial.read() : CTLSerial.read();
+    c = LCDSerial.read();
 
     if (c != -1) {
       buff[idx] = (char)c;
@@ -247,25 +318,12 @@ void loop() {
 
   // Relay, process and print the received command
   if (idx > 0) {
-    if (dir) {
-      if (!toSkip) {
+    if (!toSkip) {
         // We read from the LCD. Write it to the controller.
         CTLSerial.write(buff, idx);
-      }
-      if (debug) {
-        Serial.print("< ");
-      }
-    } else {
-      toSkip = toSkip || updateState(buff, idx);
-      if (!toSkip) {
-        // Got a command from the controller. Write it to the LCD.
-        LCDSerial.write(buff, idx);
-      }
-      if (debug) {
-        Serial.print("> ");
-      }
     }
     if (debug) {
+      Serial.print("< ");
       printBuff(buff, idx);
       if (toSkip) {
         Serial.println("[skipped]");
@@ -275,14 +333,6 @@ void loop() {
     }
   }
 
-  // intelligently switch between the sources. If the current source has
-  // more data to read, stay with the source.
-  // TODO starvation prevention.
-  if (dir && !LCDSerial.available()) {
-    dir = false;
-  } else if (!dir && !CTLSerial.available()) {
-    dir = true;
-  }
 
   // External command processing.
   // BPF selection: a 160, b 80, c 40, d 20, e 15, f 10, g 6, h auto

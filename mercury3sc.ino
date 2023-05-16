@@ -17,13 +17,13 @@
  * Serial1 : uart0 - GP0(tx), GP1(rx) - Nextion display
  * Serial2 : uart1 - GP4(tx), GP5(rx) - M3s Nano
  *
- * GP6 power on/off control. 
- * GP7 input attenuator level select.
+ * GP7 power on/off control. 
+ * GP9 input attenuator level select.
  * GP25 LED
  * 
  * EEPROM 
  * addr 0 stores the beep setting.
- * addr 1 stores verbose mode
+ * addr 1 stores verbose mode seting.
  * 
  * Dual core
  * - core0 takes care of USB. Responsible for receiving data from the 
@@ -32,10 +32,10 @@
  */
 
 #define M3S_BAUD 57600         // Mercury IIIS's internal baud rate
-#define M3S_BUFF_SIZE 64       // Internal receive buffer size
+#define M3S_BUFF_SIZE 256       // Internal receive buffer size
 #define M3S_LED 25             // on-board LED pin
-#define M3S_PCTL 6             // Power on/off control pin
-#define M3S_ATTN 7             // Attenuator control pin
+#define M3S_PCTL 7             // Power on/off control pin
+#define M3S_ATTN 9             // Attenuator control pin
 
 #include <string.h>
 #include <EEPROM.h>
@@ -45,29 +45,59 @@
 
 char buff[M3S_BUFF_SIZE];      // receiver buffer for the LCD
 char buff1[M3S_BUFF_SIZE];     // receiver buffer for the controller
-boolean beep = true;           // whether to send a beep or not.
+boolean beep = false;           // whether to send a beep or not.
 boolean debug = false;         // verbose output
 boolean initialized = false;   // init condition indicator to block core1
+volatile int usbLocked = 0;
 
 // Variables to keep track of the amp state.
 int vol, cur, swr, ref, pwr, tmp;
+boolean transmit = false;
 
 // Prints to the USB serial port. Used to dump the captured commands
 // Control characters are printed in hex.
-void printBuff(char* buff, int len) {
+void printUSB(char* buff, int len, boolean lcd) {
+  // Spin lock for usb output
+  // This is to avoid the two cores mixing characters in verbose mode.
+  // Due to extra wait time, there might be more random data drops in
+  // verbose mode.
+  while (usbLocked) { }
+  usbLocked = 1;
+  
+  if (lcd) {
+    Serial.print("> ");
+  } else {
+    Serial.print("< ");
+  }
+
   for (int i = 0; i < len; i++) {
     char c = buff[i];
     if (c > 31 && c < 128) {
       Serial.print(c);
     } else {
+      // For non printable chars.
       Serial.print("[");
       Serial.print((uint8_t)c, HEX);
       Serial.print("]");
     }
   }
+  Serial.println(" ");
+  usbLocked = 0;
 }
 
-// Send a command to the amp controller
+void printHelp() {
+  Serial.println("BPF selection: a 160m, b 80m, c 60/40, d 30/20, e 17/15, f 12/10, g 6, h auto");
+  Serial.println("ANT selection: 1, 2, 3");
+  Serial.println("Reset: r");
+  Serial.println("Fan  : j auto, k max");
+  Serial.println("Beep : s to toggle");
+  Serial.println("Status: t for human-readable format, u for short form");
+  Serial.println("Verbose: v to toggle");
+  Serial.println("Power on/off: p/q (normally off)");
+  Serial.println("Attenuator on/off: y/x (normally on)");
+}
+
+// Send a command to the nano controller
 void sendCtrlMsg(char* msg) {
   char outb[32];
   sprintf(outb,"%s%c%c%c", msg, 0xff, 0xff, 0xff);
@@ -91,15 +121,45 @@ boolean term_seq(char* data, int len) {
     return false;
 
   // examine the last three bytes.
-  if (data[len-1] == -1 && data[len-2] == -1 && data[len-3] == -1) {
+  if (data[len-1] == 0xff && data[len-2] == 0xff && data[len-3] == 0xff) {
     return true;
   } else {
     return false;
   }
 }
 
+void resetLcdState() {
+  sendLcdMsg("s.val=10");
+  sendLcdMsg("c.val=0");
+  sendLcdMsg("p.val=0");
+  sendLcdMsg("r.val=0");    
+}
+
 // Parse and update the internal state if needed.
 boolean updateState(char* buff, int len) {
+  // Is it tx/rx mode indicator? oa.picc=1 (rx), oa.picc=2 (tx)
+  if (len == 12) {
+    if (!strncmp(buff, "oa.picc=1", 9)) {
+      transmit = false;
+      digitalWrite(M3S_LED, LOW);
+      // Make sure display is reset correctly. During transmit, the high traffic
+      // can cause random byte drops. If it happens at the end of transmission,
+      // the display might be left in inconsistent state.
+      sendLcdMsg("tsw 255,1");
+      resetLcdState();
+    } else if (!strncmp(buff, "oa.picc=2", 9)) {
+      transmit = true;
+      digitalWrite(M3S_LED, HIGH);
+    } else if (!strncmp(buff, "tsw 255,1", 9) && transmit) {
+      // "oa.picc=1" is always immediately followed by "tsw 255,1". If we see this
+      // and still in transmit mode, it must mean "oa.picc=1" was lost. 
+      transmit = false;
+      digitalWrite(M3S_LED, LOW);
+      sendLcdMsg("oa.picc=1");
+      resetLcdState();
+    }
+  }  
+  
   // Is it in the form of "x.val="?
   if (buff[1] == '.' && buff[2] == 'v' && buff[3] == 'a' && buff[4] == 'l' && buff[5] == '=') {
     if (buff[6] == -1) { // 0xff terminator
@@ -113,15 +173,18 @@ boolean updateState(char* buff, int len) {
     buff[len-3] = -1; // restore 0xff
     switch(buff[0]) {
       case 'v':
+        // skip bad voltages.
+        // consider only 3 digit reports (> 10.0V) are valid.
+        if (val < 100) return true;
         vol = val;
         break;
       case 'c':
         cur = val;
         break;
       case 's':
-        swr = val;
         // skip invalid/corrupt one
-        if (swr < 10) return true;
+        if (val < 10) return true;
+        swr = val;
         break;
       case 'r':
         ref = val;
@@ -210,6 +273,7 @@ void setup() {
   pinMode(M3S_LED,  OUTPUT);
 
   digitalWrite(M3S_PCTL, LOW);  // amp off
+  digitalWrite(M3S_ATTN, LOW);  // attn on
 
   if (EEPROM.read(0) == 0x30) {
     beep = false;
@@ -226,20 +290,14 @@ void setup1() {
   while(!initialized) {
     delay(1);
   }
-
-  // Signal init success
-  for (int i = 0; i < 3; i++) {
-    digitalWrite(M3S_LED, HIGH); // turn on the led
-    delay(500);    
-    digitalWrite(M3S_LED, LOW); // turn on the led
-    delay(500);    
-  }
+  digitalWrite(M3S_LED, LOW);
 }
 
+// core 1
+// Read from the Nano controller. The traffic is very high during transmissions.
 void loop1() {
   int c, idx;
   unsigned long t;
-  boolean toSkip = false;
 
   // read one command at a time from the M3S Nano controller.
   idx = 0;
@@ -249,10 +307,11 @@ void loop1() {
     if (c != -1) {
       buff1[idx] = (char)c;
       idx++;
+      
       // check for the terminal condition
-      if (term_seq(buff, idx)) {
+      if (term_seq(buff1, idx)) {
         break;
-      }      
+      }
     }
     // timeout, buffer full, or nothing read.
     if (idx == 0 || (millis() - t) > 10 || idx == M3S_BUFF_SIZE) {
@@ -260,36 +319,30 @@ void loop1() {
       // means there is corruption/drop. In 10ms, about 60 chars can be sent at 57.6kbps.
       // A timeout means the terminating sequence will never come.  It is better to simply
       // drop it.
-      toSkip = true;
-      break;
+      return;
     }
   }
 
-  // update internal state
-  toSkip = toSkip || updateState(buff1, idx);
-  if (!toSkip) {
-    // Got a command from the controller. Write it to the LCD.
-    LCDSerial.write(buff1, idx);
-  }
-  if (debug) {
-    Serial.print("> ");
-  }
+  // update internal state. skip if bad.
+  if (updateState(buff1, idx))
+    return;
+    
+  // Got a command from the controller. Write it to the LCD.
+  LCDSerial.write(buff1, idx);
 
   if (debug) {
-    printBuff(buff1, idx);
-    if (toSkip) {
-      Serial.println("[skipped]");
-    } else {
-      Serial.println(" ");
-    }
+    printUSB(buff1, idx, false);
   }
 }
 
+// core 0
+// - Read from the LCD UART, which does not produce much traffic.
+// - USB Serial is processed by this core, between loop().
+// - Process user commands from USB serial.
 void loop() {
   int c;
   int idx;
   unsigned long t;
-  boolean toSkip = false;
 
   // read one command at a time.
   idx = 0;
@@ -311,25 +364,15 @@ void loop() {
       // means there is corruption/drop. In 10ms, about 60 chars can be sent at 57.6kbps.
       // A timeout means the terminating sequence will never come.  It is better to simply
       // drop it.
-      toSkip = true;
       break;
     }
   }
 
   // Relay, process and print the received command
   if (idx > 0) {
-    if (!toSkip) {
-        // We read from the LCD. Write it to the controller.
-        CTLSerial.write(buff, idx);
-    }
+    CTLSerial.write(buff, idx);
     if (debug) {
-      Serial.print("< ");
-      printBuff(buff, idx);
-      if (toSkip) {
-        Serial.println("[skipped]");
-      } else {
-        Serial.println(" ");
-      }
+      printUSB(buff, idx, true);
     }
   }
 
@@ -342,20 +385,21 @@ void loop() {
   // beep: s to toggle
   // status: t for human-readable format, u for short form
   // Verbose: v to toggle
+  // power on/off: p/q (normally off)
+  // attn on/off: y/x (normally on)
   //
   // The ant is automatically set after a band switch. If a custom ant port
   // needs to be set, be sure to select an ant after setting the band.
-  c = Serial.read();
-  if (c != -1) {
-    char cmd = (char)c;
+  if (Serial.available()) {
+    c = Serial.read();
+    if (c == -1) {
+      return;
+    }
 
-    if (beep && cmd != 't' && cmd != 'u' && cmd != 'v')
+    if (beep && c != 't' && c != 'u' && c != 'v')
       sendCtrlMsg("psound");
 
-    digitalWrite(M3S_LED, HIGH);
-    digitalWrite(M3S_LED, LOW);
-
-    switch(cmd) {
+    switch(c) {
       // BPF selection
       case 'a':
         sendCtrlMsg("pdia=160");
@@ -388,6 +432,9 @@ void loop() {
       case 'h':
         setLcdBand(7);
         sendCtrlMsg("pdia=255");
+        break;
+      case 'i':
+        printHelp();
         break;
 
       // power on
@@ -435,7 +482,16 @@ void loop() {
           EEPROM.write(1, 0x00);
         }
         break;
-        
+
+      // attn off
+      case 'x':
+        digitalWrite(M3S_ATTN, HIGH);
+        break;
+      // attn on
+      case 'y':
+        digitalWrite(M3S_ATTN, LOW);
+        break;
+
       // antenna selection
       case '1':
         sendCtrlMsg("ponant1");

@@ -16,8 +16,10 @@
  * EEPROM address 0 stores the beep setting.
  */
 
-#define SM_BAUD 57600         // Mercury IIIS's internal baud rate
-#define SM_BUFF_SIZE 64       // Internal receive buffer size
+#define M3S_BAUD 57600         // Mercury IIIS's internal baud rate
+#define M3S_BUFF_SIZE 64       // Internal receive buffer size
+#define M3S_LED 11
+#define M3S_PCTL PIN_B0
 
 #include <string.h>
 #include <AltSoftSerial.h>
@@ -26,18 +28,27 @@
 #define LCDSerial Serial1     // serial port for communicating with the Nextion LCD
 AltSoftSerial CTLSerial;      // serial port for communicating with the onboad Arduino Nano
 
-char buff[SM_BUFF_SIZE];      // receiver buffer
+char buff[M3S_BUFF_SIZE];      // receiver buffer
 char outb[128];               // send buffer
 boolean dir = true;           // comm direction. Read from nextion when true.
 boolean beep = true;          // whether to send a beep or not.
 boolean debug = false;        // verbose output
+int loop_count;
 
 // Variables to keep track of the amp state.
 int vol, cur, swr, ref, pwr, tmp;
+boolean transmit = false;
 
 // Prints to the USB serial port. Used to dump the captured commands
 // Control characters are printed in hex.
-void printBuff(char* buff, int len) {
+
+void printUSB(char* buff, int len, boolean lcd) {  
+  if (lcd) {
+    Serial.print("> ");
+  } else {
+    Serial.print("< ");
+  }
+
   for (int i = 0; i < len; i++) {
     char c = buff[i];
     if (c > 31 && c < 128) {
@@ -48,6 +59,7 @@ void printBuff(char* buff, int len) {
       Serial.print("]");
     }
   }
+  Serial.println(" ");
 }
 
 // Send a command to the amp controller
@@ -79,8 +91,38 @@ boolean term_seq(char* data, int len) {
   }
 }
 
+void resetLcdState() {
+  sendLcdMsg("s.val=10");
+  sendLcdMsg("c.val=0");
+  sendLcdMsg("p.val=0");
+  sendLcdMsg("r.val=0");    
+}
+
 // Parse and update the internal state if needed.
 boolean updateState(char* buff, int len) {
+  // Is it tx/rx mode indicator? oa.picc=1 (rx), oa.picc=2 (tx)
+  if (len == 12) {
+    if (!strncmp(buff, "oa.picc=1", 9)) {
+      transmit = false;
+      digitalWrite(M3S_LED, LOW);
+      // Make sure display is reset correctly. During transmit, the high traffic
+      // can cause random byte drops. If it happens at the end of transmission,
+      // the display might be left in inconsistent state.
+      sendLcdMsg("tsw 255,1");
+      resetLcdState();
+    } else if (!strncmp(buff, "oa.picc=2", 9)) {
+      transmit = true;
+      digitalWrite(M3S_LED, HIGH);
+    } else if (!strncmp(buff, "tsw 255,1", 9) && transmit) {
+      // "oa.picc=1" is always immediately followed by "tsw 255,1". If we see this
+      // and still in transmit mode, it must mean "oa.picc=1" was lost. 
+      transmit = false;
+      digitalWrite(M3S_LED, LOW);
+      sendLcdMsg("oa.picc=1");
+      resetLcdState();
+    }
+  }
+  
   // Is it in the form of "x.val="?
   if (buff[1] == '.' && buff[2] == 'v' && buff[3] == 'a' && buff[4] == 'l' && buff[5] == '=') {
     if (buff[6] == -1) { // 0xff terminator
@@ -94,15 +136,17 @@ boolean updateState(char* buff, int len) {
     buff[len-3] = -1; // restore 0xff
     switch(buff[0]) {
       case 'v':
+        // skip bad voltages.
+        // consider only 3 digit reports (> 10.0V) are valid.
+        if (val < 100) return true;
         vol = val;
         break;
       case 'c':
         cur = val;
         break;
       case 's':
+        if (val < 10) return true;
         swr = val;
-        // skip invalid/corrupt one
-        if (swr < 10) return true;
         break;
       case 'r':
         ref = val;
@@ -172,14 +216,16 @@ void setLcdBand(int b) {
 
 void setup() {
   Serial.begin(115200); // USB serial output
-  LCDSerial.begin(SM_BAUD);
+  LCDSerial.begin(M3S_BAUD);
   LCDSerial.setTimeout(1); // 1ms timeout
-  CTLSerial.begin(SM_BAUD);
+  CTLSerial.begin(M3S_BAUD);
   CTLSerial.setTimeout(1);
-  pinMode(PIN_B0, OUTPUT);  // amp power control
-  pinMode(11, OUTPUT);
-  digitalWrite(11, HIGH); // turn on the led
-  digitalWrite(PIN_B0, LOW);  // amp off
+  
+  pinMode(M3S_PCTL, OUTPUT);  // amp power control
+  pinMode(M3S_LED,  OUTPUT);
+  
+  digitalWrite(M3S_LED,  LOW); // turn on the led
+  digitalWrite(M3S_PCTL, LOW);  // amp off
 
   if (EEPROM.read(0) == 0x30) {
     beep = false;
@@ -187,6 +233,7 @@ void setup() {
   if (EEPROM.read(1) == 0x30) {
     debug = true;
   }
+  loop_count = 0;
 }
 
 
@@ -194,8 +241,8 @@ void loop() {
   int c;
   int idx;
   unsigned long t;
-  boolean toSkip = false;
-
+  boolean terminated = false;
+  
   // read one command at a time.
   idx = 0;
   t = millis();
@@ -210,56 +257,48 @@ void loop() {
       idx++;
       // check for the terminal condition
       if (term_seq(buff, idx)) {
+        terminated = true;
         break;
       }      
     }
     // timeout, buffer full, or nothing read.
-    if (idx == 0 || (millis() - t) > 10 || idx == SM_BUFF_SIZE) {
+    if (idx == 0 || (millis() - t) > 10 || idx == M3S_BUFF_SIZE) {
       // Commands are much shorter than the buffer. If the buffer is full, it
       // means there is corruption/drop. In 10ms, about 60 chars can be sent at 57.6kbps.
       // A timeout means the terminating sequence will never come.  It is better to simply
       // drop it.
-      toSkip = true;
       break;
     }
   }
 
   // Relay, process and print the received command
-  if (idx > 0) {
+  if (idx > 0 && terminated) {
+    boolean toSkip = false;
     if (dir) {
-      if (!toSkip) {
-        // We read from the LCD. Write it to the controller.
-        CTLSerial.write(buff, idx);
-      }
-      if (debug) {
-        Serial.print("< ");
-      }
+      // We read from the LCD. Write it to the controller.
+      int ecode = 0x1a;
+      if (buff[0] == (char)ecode)
+        return;
+      CTLSerial.write(buff, idx);
     } else {
-      toSkip = toSkip || updateState(buff, idx);
-      if (!toSkip) {
-        // Got a command from the controller. Write it to the LCD.
-        LCDSerial.write(buff, idx);
-      }
-      if (debug) {
-        Serial.print("> ");
-      }
+      if (updateState(buff, idx))
+        return;  // bad record
+      LCDSerial.write(buff, idx);
     }
+    
     if (debug) {
-      printBuff(buff, idx);
-      if (toSkip) {
-        Serial.println("[skipped]");
-      } else {
-        Serial.println(" ");
-      }
+      printUSB(buff, idx, dir);
     }
   }
 
   // intelligently switch between the sources. If the current source has
   // more data to read, stay with the source.
-  // TODO starvation prevention.
+  loop_count++;
   if (dir && !LCDSerial.available()) {
+    loop_count = 0;
     dir = false;
-  } else if (!dir && !CTLSerial.available()) {
+  } else if (!dir && (!CTLSerial.available() || loop_count > 10)) {
+    loop_count = 0;
     dir = true;
   }
 

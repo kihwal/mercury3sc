@@ -63,13 +63,13 @@ void printUSB(char* buff, int len, boolean lcd) {
 }
 
 // Send a command to the amp controller
-void sendCtrlMsg(char* msg) {
+void sendCtrlMsg(const char* msg) {
   sprintf(outb,"%s%c%c%c", msg, 0xff, 0xff, 0xff);
   CTLSerial.print(outb);
 }
 
 // send a command to the LCD
-void sendLcdMsg(char* msg) {
+void sendLcdMsg(const char* msg) {
   sprintf(outb,"%s%c%c%c", msg, 0xff, 0xff, 0xff);
   LCDSerial.print(outb);
 }
@@ -273,7 +273,6 @@ void loop() {
 
   // Relay, process and print the received command
   if (idx > 0 && terminated) {
-    boolean toSkip = false;
     if (dir) {
       // We read from the LCD. Write it to the controller.
       int ecode = 0x1a;

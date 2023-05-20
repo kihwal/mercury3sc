@@ -20,20 +20,21 @@
 #define M3S_BUFF_SIZE 64       // Internal receive buffer size
 #define M3S_LED 11             // LDE pin
 #define M3S_PCTL PIN_B0        // Power on/off io pin
+#define M3S_ATTN PIN_B1        // Attenuator relay control (K9SUL custom)
 #define M3S_ST_WINDOW 4        // outlier drop window size
 
 #include <string.h>
 #include <AltSoftSerial.h>
 #include <EEPROM.h>
 
-#define LCDSerial Serial1     // serial port for communicating with the Nextion LCD
-AltSoftSerial CTLSerial;      // serial port for communicating with the onboad Arduino Nano
+#define LCDSerial Serial1      // serial port for communicating with the Nextion LCD
+AltSoftSerial CTLSerial;       // serial port for communicating with the onboad Arduino Nano
 
 char buff[M3S_BUFF_SIZE];      // receiver buffer
-char outb[128];               // send buffer
-boolean dir = true;           // comm direction. Read from nextion when true.
-boolean beep = true;          // whether to send a beep or not.
-boolean debug = false;        // verbose output
+char outb[128];                // send buffer
+boolean dir = true;            // comm direction. Read from nextion when true.
+boolean beep = false;           // whether to send a beep or not.
+boolean debug = false;         // verbose output
 int loop_count;
 
 // Variables to keep track of the amp state. Each state keeps a history of the length
@@ -48,8 +49,7 @@ boolean transmit = false;
 
 // Prints to the USB serial port. Used to dump the captured commands
 // Control characters are printed in hex.
-
-void printUSB(char* buff, int len, boolean lcd) {  
+void printUSB(char* buff, int len, boolean lcd) {
   if (lcd) {
     Serial.print("> ");
   } else {
@@ -61,6 +61,7 @@ void printUSB(char* buff, int len, boolean lcd) {
     if (c > 31 && c < 128) {
       Serial.print(c);
     } else {
+      // For non printable chars.
       Serial.print("[");
       Serial.print((uint8_t)c, HEX);
       Serial.print("]");
@@ -69,7 +70,19 @@ void printUSB(char* buff, int len, boolean lcd) {
   Serial.println(" ");
 }
 
-// Send a command to the amp controller
+void printHelp() {
+  Serial.println("BPF selection: a 160m, b 80m, c 60/40, d 30/20, e 17/15, f 12/10, g 6, h auto");
+  Serial.println("ANT selection: 1, 2, 3");
+  Serial.println("Reset: r");
+  Serial.println("Fan  : j auto, k max");
+  Serial.println("Beep : s to toggle");
+  Serial.println("Status: t for human-readable format, u for short form");
+  Serial.println("Verbose: v to toggle");
+  Serial.println("Power on/off: p/q (normally off)");
+  Serial.println("Attenuator on/off: y/x (normally on)");
+}
+
+// Send a command to the nano controller
 void sendCtrlMsg(const char* msg) {
   sprintf(outb,"%s%c%c%c", msg, 0xff, 0xff, 0xff);
   CTLSerial.print(outb);
@@ -275,18 +288,22 @@ void setLcdBand(int b) {
   }
 }
 
+
 void setup() {
-  Serial.begin(115200); // USB serial output
-  LCDSerial.begin(M3S_BAUD);
+  Serial.begin(115200); // USB serial output. the speed has no meaning.
   LCDSerial.setTimeout(1); // 1ms timeout
-  CTLSerial.begin(M3S_BAUD);
+  LCDSerial.begin(M3S_BAUD);
+
   CTLSerial.setTimeout(1);
-  
+  CTLSerial.begin(M3S_BAUD);
+
   pinMode(M3S_PCTL, OUTPUT);  // amp power control
+  pinMode(M3S_ATTN, OUTPUT);
   pinMode(M3S_LED,  OUTPUT);
-  
+
   digitalWrite(M3S_LED,  LOW); // turn on the led
   digitalWrite(M3S_PCTL, LOW);  // amp off
+  digitalWrite(M3S_ATTN, LOW);  // attn on
 
   if (EEPROM.read(0) == 0x30) {
     beep = false;
@@ -309,14 +326,14 @@ void loop() {
   int idx;
   unsigned long t;
   boolean terminated = false;
-  
+
   // read one command at a time.
   idx = 0;
   t = millis();
   while (1) {
     // dir tells it to read from LCD or the controller. It alternates between
     // the two unless there are more data readily available in the current port.
-    // This is happens a lot when transmitting. 
+    // This is happens a lot when transmitting.
     c = (dir) ? LCDSerial.read() : CTLSerial.read();
 
     if (c != -1) {
@@ -350,7 +367,7 @@ void loop() {
       if (updateState(buff, idx))
         LCDSerial.write(buff, idx);
     }
-    
+
     if (debug) {
       printUSB(buff, idx, dir);
     }
@@ -375,17 +392,21 @@ void loop() {
   // beep: s to toggle
   // status: t for human-readable format, u for short form
   // Verbose: v to toggle
+  // power on/off: p/q (normally off)
+  // attn on/off: y/x (normally on)
   //
   // The ant is automatically set after a band switch. If a custom ant port
   // needs to be set, be sure to select an ant after setting the band.
-  c = Serial.read();
-  if (c != -1) {
-    char cmd = (char)c;
+  if (Serial.available()) {
+    c = Serial.read();
+    if (c == -1) {
+      return;
+    }
 
-    if (beep && cmd != 't' && cmd != 'u' && cmd != 'v')
+    if (beep && c != 't' && c != 'u' && c != 'v')
       sendCtrlMsg("psound");
-      
-    switch(cmd) {
+
+    switch(c) {
       // BPF selection
       case 'a':
         sendCtrlMsg("pdia=160");
@@ -419,14 +440,17 @@ void loop() {
         setLcdBand(7);
         sendCtrlMsg("pdia=255");
         break;
+      case 'i':
+        printHelp();
+        break;
 
       // power on
       case 'p':
-        digitalWrite(PIN_B0, HIGH);
+        digitalWrite(M3S_PCTL, HIGH);
         break;
       // power off
       case 'q':
-        digitalWrite(PIN_B0, LOW);
+        digitalWrite(M3S_PCTL, LOW);
         break;
         
       // reset
@@ -465,7 +489,16 @@ void loop() {
           EEPROM.write(1, 0x00);
         }
         break;
-        
+
+      // attn off
+      case 'x':
+        digitalWrite(M3S_ATTN, HIGH);
+        break;
+      // attn on
+      case 'y':
+        digitalWrite(M3S_ATTN, LOW);
+        break;
+
       // antenna selection
       case '1':
         sendCtrlMsg("ponant1");

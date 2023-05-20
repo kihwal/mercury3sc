@@ -58,3 +58,10 @@ selection command based on the settings. If you want a different antenna for the
 you need to issue an antenna select command after changing the band.
 
 Beep and verbose mode selections are saved to EEPROM.
+
+## Notes on RP2040, Raspberry PI Pico
+
+The code is in the rp2040 branch. Since it is a 3.3V device, level converters are 
+needed for the four UART signal lines. For the digital outputs, the default low
+power output won't be enough to drive most cirscuits. The 12mA pad is selected.
+

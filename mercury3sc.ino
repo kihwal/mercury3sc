@@ -18,8 +18,9 @@
 
 #define M3S_BAUD 57600         // Mercury IIIS's internal baud rate
 #define M3S_BUFF_SIZE 64       // Internal receive buffer size
-#define M3S_LED 11
-#define M3S_PCTL PIN_B0
+#define M3S_LED 11             // LDE pin
+#define M3S_PCTL PIN_B0        // Power on/off io pin
+#define M3S_ST_WINDOW 4        // outlier drop window size
 
 #include <string.h>
 #include <AltSoftSerial.h>
@@ -35,8 +36,14 @@ boolean beep = true;          // whether to send a beep or not.
 boolean debug = false;        // verbose output
 int loop_count;
 
-// Variables to keep track of the amp state.
-int vol, cur, swr, ref, pwr, tmp;
+// Variables to keep track of the amp state. Each state keeps a history of the length
+// defined by M3S_ST_WINDOW. If a newly added value is an outlier, it will still be
+// recorded, but won't be relayed to the LCD.
+//
+// vol[M3S_ST_WINDOW] contains the curent head index
+// vol[M3S_ST_WINDOW + 1] contains last known good value
+int vol[M3S_ST_WINDOW+2], cur[M3S_ST_WINDOW+2], swr[M3S_ST_WINDOW+2];
+int ref[M3S_ST_WINDOW+2], pwr[M3S_ST_WINDOW+2], tmp[M3S_ST_WINDOW+2];
 boolean transmit = false;
 
 // Prints to the USB serial port. Used to dump the captured commands
@@ -91,14 +98,54 @@ boolean term_seq(char* data, int len) {
   }
 }
 
+// Reset the Nextion LCD after transitioning from TX to RX. This is to clear
+// any inconsistent updates during TX.
 void resetLcdState() {
   sendLcdMsg("s.val=10");
   sendLcdMsg("c.val=0");
   sendLcdMsg("p.val=0");
-  sendLcdMsg("r.val=0");    
+  sendLcdMsg("r.val=0");
+  swr[M3S_ST_WINDOW + 1] = 10;
+  pwr[M3S_ST_WINDOW + 1] = 0;
+  cur[M3S_ST_WINDOW + 1] = 0;
+  ref[M3S_ST_WINDOW + 1] = 0;
+}
+
+// Add a new value to the array.
+boolean addVal(int st[], int val) {
+  boolean isGoodVal = true;
+  
+  int cidx = st[M3S_ST_WINDOW]; // last element is used for current head index
+  // is it a good value to report?
+  for (int i = 0; i < M3S_ST_WINDOW; i++) {
+    if (i == cidx)
+      continue; // this is the oldest val that will be replaced.
+    int diff = (st[i] > val) ? (st[i] - val) : (val - st[i]);
+    // It is an outliner if more than +/- 25%
+    if (diff > st[i]/4) {
+      isGoodVal = false; // this is an outlier
+      break;
+    }
+  }
+  // save the value and update the index
+  st[cidx] = val;
+  st[M3S_ST_WINDOW] = (cidx + 1) % M3S_ST_WINDOW;
+  if (isGoodVal) {
+    st[M3S_ST_WINDOW + 1] = val;
+  }
+  return isGoodVal;
+}
+
+void addValNoCheck(int st[], int val) {
+  // save the value and update the index
+  int cidx = st[M3S_ST_WINDOW];
+  st[cidx] = val;
+  st[M3S_ST_WINDOW] = (cidx + 1) % M3S_ST_WINDOW;
+  st[M3S_ST_WINDOW + 1] = val;
 }
 
 // Parse and update the internal state if needed.
+// returns true if the record is to be reported.
 boolean updateState(char* buff, int len) {
   // Is it tx/rx mode indicator? oa.picc=1 (rx), oa.picc=2 (tx)
   if (len == 12) {
@@ -127,7 +174,7 @@ boolean updateState(char* buff, int len) {
   if (buff[1] == '.' && buff[2] == 'v' && buff[3] == 'a' && buff[4] == 'l' && buff[5] == '=') {
     if (buff[6] == -1) { // 0xff terminator
       // no data after "=".
-      return true;
+      return false; // discard without updating
     }
 
     // parse the integer string
@@ -138,31 +185,43 @@ boolean updateState(char* buff, int len) {
       case 'v':
         // skip bad voltages.
         // consider only 3 digit reports (> 10.0V) are valid.
-        if (val < 100) return true;
-        vol = val;
+        if (val < 100) return false;
+        if (transmit)
+          return addVal(vol, val);
+        addValNoCheck(vol, val);
         break;
       case 'c':
-        cur = val;
+        if (transmit)
+          return addVal(cur, val);
+        addValNoCheck(cur, val);
         break;
       case 's':
-        if (val < 10) return true;
-        swr = val;
+        if (val < 10) return false;
+        if (transmit)
+          return addVal(swr, val);
+        addValNoCheck(swr, val);
         break;
       case 'r':
-        ref = val;
+        if (transmit)
+          return addVal(ref, val);
+        addValNoCheck(ref, val);
         break;
       case 'p':
-        pwr = val;
+        if (transmit)
+          return addVal(pwr, val);
+        addValNoCheck(pwr, val);
         break;
       case 't':
-        tmp = val;
+        if (transmit)
+          return addVal(tmp, val);
+        addValNoCheck(tmp, val);
         break;
       default:
         break;
      }
-     return false;
+     return true;
   }
-  return false;
+  return true;
 }
 
 void printWithDecimal(int val) {
@@ -174,19 +233,21 @@ void printWithDecimal(int val) {
 void printStatus(boolean human_readable) {
   if (human_readable) {
     Serial.print("Output Power   : ");
-    printWithDecimal(pwr);
+    printWithDecimal(pwr[M3S_ST_WINDOW + 1]);
     Serial.print("Reflected Power: ");
-    printWithDecimal(ref);
+    printWithDecimal(ref[M3S_ST_WINDOW + 1]);
     Serial.print("SWR : ");
-    printWithDecimal(swr);
+    printWithDecimal(swr[M3S_ST_WINDOW + 1]);
     Serial.print("Drain Voltage  : ");
-    printWithDecimal(vol);
+    printWithDecimal(vol[M3S_ST_WINDOW + 1]);
     Serial.print("Drain Current  :");
-    printWithDecimal(cur);
+    printWithDecimal(cur[M3S_ST_WINDOW + 1]);
     Serial.print("Temperature(C) : ");
-    Serial.println(tmp);
+    Serial.println(tmp[M3S_ST_WINDOW + 1]);
   } else {
-    sprintf(outb, "%d %d %d %d %d %d", pwr, ref, swr, vol, cur, tmp);
+    sprintf(outb, "%d %d %d %d %d %d", pwr[M3S_ST_WINDOW + 1], ref[M3S_ST_WINDOW + 1],
+        swr[M3S_ST_WINDOW + 1], vol[M3S_ST_WINDOW + 1],
+        cur[M3S_ST_WINDOW + 1], tmp[M3S_ST_WINDOW + 1]);
     Serial.println(outb);
   }
 }
@@ -233,7 +294,13 @@ void setup() {
   if (EEPROM.read(1) == 0x30) {
     debug = true;
   }
+
   loop_count = 0;
+
+  // init the state storage.
+  for (int i = 0; i < M3S_ST_WINDOW + 2; i++) {
+    vol[i] = cur[i] = swr[i] = ref[i] = pwr[i] = tmp[i] = 0;
+  }
 }
 
 
@@ -281,8 +348,7 @@ void loop() {
       CTLSerial.write(buff, idx);
     } else {
       if (updateState(buff, idx))
-        return;  // bad record
-      LCDSerial.write(buff, idx);
+        LCDSerial.write(buff, idx);
     }
     
     if (debug) {
@@ -292,7 +358,7 @@ void loop() {
 
   // intelligently switch between the sources. If the current source has
   // more data to read, stay with the source.
-  loop_count++;
+  loop_count++; // starvation prevention
   if (dir && !LCDSerial.available()) {
     loop_count = 0;
     dir = false;

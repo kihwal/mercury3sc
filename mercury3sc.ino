@@ -37,6 +37,7 @@
 #define M3S_PCTL 9             // Power on/off control pin
 #define M3S_ATTN 7             // Attenuator control pin
 #define M3S_ST_WINDOW 4        // outlier drop window size
+#define M3S_ST_VAL    5        // M3S_ST_WINDOW + 1
 
 #include <string.h>
 #include <EEPROM.h>
@@ -168,7 +169,7 @@ boolean addVal(int st[], int val) {
   st[cidx] = val;
   st[M3S_ST_WINDOW] = (cidx + 1) % M3S_ST_WINDOW;
   if (isGoodVal) {
-    st[M3S_ST_WINDOW + 1] = val;
+    st[M3S_ST_VAL] = val;
   }
   return isGoodVal;
 }
@@ -178,7 +179,7 @@ void addValNoCheck(int st[], int val) {
   int cidx = st[M3S_ST_WINDOW];
   st[cidx] = val;
   st[M3S_ST_WINDOW] = (cidx + 1) % M3S_ST_WINDOW;
-  st[M3S_ST_WINDOW + 1] = val;
+  st[M3S_ST_VAL] = val;
 }
 
 // Parse and update the internal state if needed.
@@ -261,31 +262,24 @@ boolean updateState(char* buff, int len) {
   return true;
 }
 
-void printWithDecimal(int val) {
-  Serial.print(val/10);
-  Serial.print(".");
-  Serial.println(val%10);
-}
-
 void printStatus(boolean human_readable) {
   if (human_readable) {
     Serial.print("Output Power   : ");
-    printWithDecimal(pwr[M3S_ST_WINDOW + 1]);
+    Serial.println(pwr[M3S_ST_VAL]);
     Serial.print("Reflected Power: ");
-    printWithDecimal(ref[M3S_ST_WINDOW + 1]);
+    Serial.println(ref[M3S_ST_VAL]);
     Serial.print("SWR : ");
-    printWithDecimal(swr[M3S_ST_WINDOW + 1]);
+    Serial.println(swr[M3S_ST_VAL]);
     Serial.print("Drain Voltage  : ");
-    printWithDecimal(vol[M3S_ST_WINDOW + 1]);
+    Serial.println(vol[M3S_ST_VAL]);
     Serial.print("Drain Current  :");
-    printWithDecimal(cur[M3S_ST_WINDOW + 1]);
+    Serial.println(cur[M3S_ST_VAL]);
     Serial.print("Temperature(C) : ");
-    Serial.println(tmp[M3S_ST_WINDOW + 1]);
+    Serial.println(tmp[M3S_ST_VAL]);
   } else {
     char outb[32];
-    sprintf(outb, "%d %d %d %d %d %d", pwr[M3S_ST_WINDOW + 1], ref[M3S_ST_WINDOW + 1],
-        swr[M3S_ST_WINDOW + 1], vol[M3S_ST_WINDOW + 1],
-        cur[M3S_ST_WINDOW + 1], tmp[M3S_ST_WINDOW + 1]);
+    sprintf(outb, "%d %d %d %d %d %d", pwr[M3S_ST_VAL], ref[M3S_ST_VAL],
+        swr[M3S_ST_VAL], vol[M3S_ST_VAL], cur[M3S_ST_VAL], tmp[M3S_ST_VAL]);
     Serial.println(outb);
   }
 }

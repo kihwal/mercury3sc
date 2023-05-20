@@ -34,8 +34,8 @@
 #define M3S_BAUD 57600         // Mercury IIIS's internal baud rate
 #define M3S_BUFF_SIZE 256       // Internal receive buffer size
 #define M3S_LED 25             // on-board LED pin
-#define M3S_PCTL 7             // Power on/off control pin
-#define M3S_ATTN 9             // Attenuator control pin
+#define M3S_PCTL 9             // Power on/off control pin
+#define M3S_ATTN 7             // Attenuator control pin
 #define M3S_ST_WINDOW 4        // outlier drop window size
 
 #include <string.h>
@@ -328,8 +328,8 @@ void setup() {
   CTLSerial.setFIFOSize(128); // sensor updates come at full speed on tx
   CTLSerial.begin(M3S_BAUD);
 
-  pinMode(M3S_PCTL, OUTPUT);  // amp power control
-  pinMode(M3S_ATTN, OUTPUT); 
+  pinMode(M3S_PCTL, OUTPUT_12MA);  // amp power control
+  pinMode(M3S_ATTN, OUTPUT_12MA); 
   pinMode(M3S_LED,  OUTPUT);
 
   digitalWrite(M3S_PCTL, LOW);  // amp off

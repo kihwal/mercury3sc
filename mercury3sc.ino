@@ -21,8 +21,8 @@
 #define M3S_LED 11             // LDE pin
 #define M3S_PCTL PIN_B0        // Power on/off io pin
 #define M3S_ATTN PIN_B1        // Attenuator relay control (K9SUL custom)
-#define M3S_ST_WINDOW 4        // outlier drop window size
-#define M3S_ST_VAL    5        // M3S_ST_WINDOW + 1
+#define M3S_ST_WINDOW 3        // outlier drop window size
+#define M3S_ST_VAL    4        // M3S_ST_WINDOW + 1
 
 #include <string.h>
 #include <AltSoftSerial.h>
@@ -332,12 +332,26 @@ void loop() {
     c = (dir) ? LCDSerial.read() : CTLSerial.read();
 
     if (c != -1) {
+      if (idx == 0 && (char)c == M3S_TERM) {
+        return;
+      }
       buff[idx++] = (char)c;
-      // check for the terminal condition
-      if (term_seq(buff, idx)) {
+      if (buff[idx-1] == M3S_TERM) {
+        // terminating sequence started. Add two more 0xff.
+        buff[idx++] = M3S_TERM;
+        buff[idx++] = M3S_TERM;
+        // now skip up to two 0xff in the stream.
+        c = (dir) ? LCDSerial.peek() : CTLSerial.peek();
+        if ((char)c == M3S_TERM) {
+          c = (dir) ? LCDSerial.read() : CTLSerial.read();
+          c = (dir) ? LCDSerial.peek() : CTLSerial.peek();
+          if ((char)c == M3S_TERM) {
+            c = (dir) ? LCDSerial.read() : CTLSerial.read();
+          }
+        }
         terminated = true;
         break;
-      }    
+      }
     }
     // timeout, buffer full, or nothing read.
     if (idx == 0 || (millis() - t) > 10 || idx == M3S_BUFF_SIZE) {

@@ -36,6 +36,7 @@ char outb[128];                // send buffer
 boolean dir = true;            // comm direction. Read from nextion when true.
 boolean beep = false;           // whether to send a beep or not.
 boolean debug = false;         // verbose output
+const char M3S_TERM = 0xff;
 int loop_count;
 
 // Variables to keep track of the amp state. Each state keeps a history of the length
@@ -85,13 +86,13 @@ void printHelp() {
 
 // Send a command to the nano controller
 void sendCtrlMsg(const char* msg) {
-  sprintf(outb,"%s%c%c%c", msg, 0xff, 0xff, 0xff);
+  sprintf(outb,"%s%c%c%c", msg, M3S_TERM, M3S_TERM, M3S_TERM);
   CTLSerial.print(outb);
 }
 
 // send a command to the LCD
 void sendLcdMsg(const char* msg) {
-  sprintf(outb,"%s%c%c%c", msg, 0xff, 0xff, 0xff);
+  sprintf(outb,"%s%c%c%c", msg, M3S_TERM, M3S_TERM, M3S_TERM);
   LCDSerial.print(outb);
 }
 
@@ -105,7 +106,7 @@ boolean term_seq(char* data, int len) {
     return false;
 
   // examine the last three bytes.
-  if (data[len-1] == -1 && data[len-2] == -1 && data[len-3] == -1) {
+  if (data[len-1] == M3S_TERM && data[len-2] == M3S_TERM && data[len-3] == M3S_TERM) {
     return true;
   } else {
     return false;
@@ -186,7 +187,7 @@ boolean updateState(char* buff, int len) {
   
   // Is it in the form of "x.val="?
   if (buff[1] == '.' && buff[2] == 'v' && buff[3] == 'a' && buff[4] == 'l' && buff[5] == '=') {
-    if (buff[6] == -1) { // 0xff terminator
+    if (buff[6] == M3S_TERM) { // 0xff terminator
       // no data after "=".
       return false; // discard without updating
     }
@@ -194,7 +195,7 @@ boolean updateState(char* buff, int len) {
     // parse the integer string
     buff[len-3] = '\0'; // temporarily null terminated
     int val = atoi(buff + 6);
-    buff[len-3] = -1; // restore 0xff
+    buff[len-3] = M3S_TERM; // restore 0xff
     switch(buff[0]) {
       case 'v':
         // skip bad voltages.
@@ -271,13 +272,13 @@ void printStatus(boolean human_readable) {
 void setLcdBand(int b) {
   // clear auto-selected band marker
   for (int i = 6; i <= 12; i++) {
-    sprintf(outb, "q%d.picc=1%c%c%c", i, 0xff, 0xff, 0xff);
+    sprintf(outb, "q%d.picc=1%c%c%c", i, M3S_TERM, M3S_TERM, M3S_TERM);
     LCDSerial.print(outb);
   }
 
   // Select the manual band button
   for (int i = 0; i <= 7; i++) {
-    sprintf(outb, "band%d.val=%d%c%c%c", i, (i==b) ? 1:0 ,0xff, 0xff, 0xff);
+    sprintf(outb, "band%d.val=%d%c%c%c", i, (i==b) ? 1:0 ,M3S_TERM, M3S_TERM, M3S_TERM);
     LCDSerial.print(outb);
   }
 }
@@ -331,13 +332,12 @@ void loop() {
     c = (dir) ? LCDSerial.read() : CTLSerial.read();
 
     if (c != -1) {
-      buff[idx] = (char)c;
-      idx++;
+      buff[idx++] = (char)c;
       // check for the terminal condition
       if (term_seq(buff, idx)) {
         terminated = true;
         break;
-      }      
+      }    
     }
     // timeout, buffer full, or nothing read.
     if (idx == 0 || (millis() - t) > 10 || idx == M3S_BUFF_SIZE) {

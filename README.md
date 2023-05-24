@@ -21,10 +21,18 @@ This is how I wired it.
 | 10 (sw rx) | Control board pin 2 |
 
 For the power on/off control, PIN_B0 is used. This is connected to the gate of 
-a 2N7000. The pin 2 and 3 are connected to the soft power signal pins of the
-switching power supply. By grounding the pin measuring 3.3V, the power supply
-is turned on. I connected this pin to the drain of the 2N7000. Its source pin
-is grounded.
+a 2N7000. The 53.6V switching power supply is turned on by grounding the slot
+detection pin of the supply. The voltage on this pin is measured about 3.3V.
+The Mercury III's power switch grounds this pin. Connect this pin to the drain
+of the 2N7000 and the source of the 2N7000 to ground. If you make the switch
+and the FET parallel, you will still be able to turn on the amp using the power
+switch.
+
+The Teensy pin PIN_B1 is connected to another 2N7000 for extra control. I use
+it for switching the input attenuator. I have modified the input attenuator to
+better accommodate low power transmitters. By default the attenuation is about
+17dB, just like the standard factory configuration. When the switching relay is
+energized, it shorts the 10dB attenuator, requiring lower drive power.
 
 ## Control commands
 mercury3sc was written on Arduino 1.8 with the Teensy support package from PJRC.
@@ -40,6 +48,7 @@ You can issue commands through the USB-serial interface.
 | f | Select BPF for 10m |
 | g | Select BPF for 6m |
 | h | Enter auto detect mode |
+| i | Help |
 | j | Fan normal |
 | k | Fan max |
 | p | Power on |
@@ -49,6 +58,8 @@ You can issue commands through the USB-serial interface.
 | t | Dump status (human readable) |
 | u | Dump status (short form) |
 | v | Toggle verbos mode |
+| x | Attenuator off |
+| y | Attenuator on (default) |
 | 1 | Select ant 1 |
 | 2 | Select ant 2 |
 | 3 | Select ant 3 |

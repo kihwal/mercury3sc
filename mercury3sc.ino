@@ -25,12 +25,21 @@
 #define M3S_ST_VAL    4        // M3S_ST_WINDOW + 1
 
 #include <string.h>
-#include <AltSoftSerial.h>
+// #include <AltSoftSerial.h>
 #include <EEPROM.h>
+#include <DFRobot_IICSerial.h>
 
-#define LCDSerial Serial1      // serial port for communicating with the Nextion LCD
-AltSoftSerial CTLSerial;       // serial port for communicating with the onboad Arduino Nano
+DFRobot_IICSerial iicSerial3(Wire, /*subUartChannel =*/SUBUART_CHANNEL_1,/*IA1 = */1,/*IA0 = */1);//Construct UART1
+DFRobot_IICSerial iicSerial2(Wire, /*subUartChannel =*/SUBUART_CHANNEL_2, /*IA1 = */1,/*IA0 = */1);//Construct UART2
 
+// #define LCDSerial Serial1      // serial port for communicating with the Nextion LCD
+// AltSoftSerial CTLSerial;       // serial port for communicating with the onboad Arduino Nano
+
+#define LCDSerial iicSerial2
+#define CTLSerial iicSerial3
+
+const int PIN_B0 = 2;
+const int PIN_B1 = 3;
 char buff[M3S_BUFF_SIZE];      // receiver buffer
 char outb[128];                // send buffer
 boolean dir = true;            // comm direction. Read from nextion when true.
@@ -186,8 +195,19 @@ boolean updateState(char* buff, int len) {
   }
   
   // Is it in the form of "x.val="?
-  if (buff[1] == '.' && buff[2] == 'v' && buff[3] == 'a' && buff[4] == 'l' && buff[5] == '=') {
-    if (buff[6] == M3S_TERM) { // 0xff terminator
+  
+  // determine if 1 or 2 char cmd
+      int dotPos = -1;
+      if (buff[1] == '.') {
+          dotPos = 1;
+      }
+      if (buff[2] == '.') {
+          dotPos = 2;
+      }
+  
+  // offset position of buff test based on whether one or two char cmd
+  if (buff[dotPos] == '.' && buff[dotPos+1] == 'v' && buff[dotPos+2] == 'a' && buff[dotPos+3] == 'l' && buff[dotPos+4] == '=') {
+    if (buff[dotPos+5] == M3S_TERM) { // 0xff terminator
       // no data after "=".
       return false; // discard without updating
     }

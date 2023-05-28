@@ -324,6 +324,7 @@ void setLcdBand(int b) {
 
 
 void setup() {
+  Wire.setClock(400000); // set i2c bus speed fast
   Serial.begin(115200); // USB serial output. the speed has no meaning.
   LCDSerial.setTimeout(1); // 1ms timeout
   LCDSerial.begin(M3S_BAUD);
@@ -393,7 +394,12 @@ void loop() {
       }
     }
     // timeout, buffer full, or nothing read.
-    if (idx == 0 || (millis() - t) > 10 || idx == M3S_BUFF_SIZE) {
+    if (idx == 0 || (millis() - t) > /*10*/ 50 || idx == M3S_BUFF_SIZE) {
+      // w5sqk- 
+      // value of 10 results in no bar graph display ref pwr, drain I, or output pwr (peak & instantanous)
+      // value of 20 results in bar graph display ref pwr, drain I, & output pwr -peak marker
+      // value of 50 results in all bar graph displays ref pwr, drain I, & output pwr (peak & instantanous)
+      //
       // Commands are much shorter than the buffer. If the buffer is full, it
       // means there is corruption/drop. In 10ms, about 60 chars can be sent at 57.6kbps.
       // A timeout means the terminating sequence will never come.  It is better to simply

@@ -18,7 +18,7 @@
 
 //
 // Initial modification to K9SUL's code to handle two char command sequences.
-// Changes principally in module updateState & printStatus
+// Changes principally in module updateState
 // 
 // w5sqk 05/27/2023
 //

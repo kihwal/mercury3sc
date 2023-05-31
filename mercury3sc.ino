@@ -16,6 +16,13 @@
  * EEPROM address 0 stores the beep setting.
  */
 
+//
+// Initial modification to K9SUL's code to handle two char command sequences.
+// Changes principally in module updateState
+// 
+// w5sqk 05/27/2023
+//
+
 #define M3S_BAUD 57600         // Mercury IIIS's internal baud rate
 #define M3S_BUFF_SIZE 64       // Internal receive buffer size
 #define M3S_LED 11             // LDE pin
@@ -25,12 +32,23 @@
 #define M3S_ST_VAL    4        // M3S_ST_WINDOW + 1
 
 #include <string.h>
-#include <AltSoftSerial.h>
+// #include <AltSoftSerial.h>
 #include <EEPROM.h>
 
-#define LCDSerial Serial1      // serial port for communicating with the Nextion LCD
-AltSoftSerial CTLSerial;       // serial port for communicating with the onboad Arduino Nano
+//i2c to dual uart
+#include <DFRobot_IICSerial.h>
 
+DFRobot_IICSerial iicSerial3(Wire, /*subUartChannel =*/SUBUART_CHANNEL_1,/*IA1 = */1,/*IA0 = */1);//Construct UART1
+DFRobot_IICSerial iicSerial2(Wire, /*subUartChannel =*/SUBUART_CHANNEL_2, /*IA1 = */1,/*IA0 = */1);//Construct UART2
+
+// #define LCDSerial Serial1      // serial port for communicating with the Nextion LCD
+// AltSoftSerial CTLSerial;       // serial port for communicating with the onboad Arduino Nano
+
+#define LCDSerial iicSerial2
+#define CTLSerial iicSerial3
+
+const int PIN_B0 = 2;
+const int PIN_B1 = 3;
 char buff[M3S_BUFF_SIZE];      // receiver buffer
 char outb[128];                // send buffer
 boolean dir = true;            // comm direction. Read from nextion when true.
@@ -186,15 +204,36 @@ boolean updateState(char* buff, int len) {
   }
   
   // Is it in the form of "x.val="?
-  if (buff[1] == '.' && buff[2] == 'v' && buff[3] == 'a' && buff[4] == 'l' && buff[5] == '=') {
-    if (buff[6] == M3S_TERM) { // 0xff terminator
+  
+  // determine if 1 or 2 char cmd
+      int dotPos = -1;
+      if (buff[1] == '.') {
+          dotPos = 1;
+      }
+      if (buff[2] == '.') {
+          dotPos = 2;
+      }
+  
+  // offset position of buff test based on whether one or two char cmd
+  if (buff[dotPos] == '.' && buff[dotPos+1] == 'v' && buff[dotPos+2] == 'a' && buff[dotPos+3] == 'l' && buff[dotPos+4] == '=') {
+    if (buff[dotPos+5] == M3S_TERM) { // 0xff terminator
       // no data after "=".
       return false; // discard without updating
     }
 
     // parse the integer string
     buff[len-3] = '\0'; // temporarily null terminated
-    int val = atoi(buff + 6);
+
+    //parse based on whether one or two char cmd
+    int val;
+    switch (dotPos) {
+        case 1:
+           val = atoi(buff + 6); 
+           break;
+        case 2:
+           val = atoi(buff + 7); 
+           break;
+      }
     buff[len-3] = M3S_TERM; // restore 0xff
     switch(buff[0]) {
       case 'v':
@@ -285,6 +324,7 @@ void setLcdBand(int b) {
 
 
 void setup() {
+  Wire.setClock(400000); // set i2c bus speed fast
   Serial.begin(115200); // USB serial output. the speed has no meaning.
   LCDSerial.setTimeout(1); // 1ms timeout
   LCDSerial.begin(M3S_BAUD);
@@ -354,7 +394,12 @@ void loop() {
       }
     }
     // timeout, buffer full, or nothing read.
-    if (idx == 0 || (millis() - t) > 10 || idx == M3S_BUFF_SIZE) {
+    if (idx == 0 || (millis() - t) > /*10*/ 50 || idx == M3S_BUFF_SIZE) {
+      // w5sqk- 
+      // value of 10 results in no bar graph display ref pwr, drain I, or output pwr (peak & instantanous)
+      // value of 20 results in bar graph display ref pwr, drain I, & output pwr -peak marker
+      // value of 50 results in all bar graph displays ref pwr, drain I, & output pwr (peak & instantanous)
+      //
       // Commands are much shorter than the buffer. If the buffer is full, it
       // means there is corruption/drop. In 10ms, about 60 chars can be sent at 57.6kbps.
       // A timeout means the terminating sequence will never come.  It is better to simply

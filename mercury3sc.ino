@@ -31,13 +31,19 @@
 #define LCDSerial Serial1      // serial port for communicating with the Nextion LCD
 AltSoftSerial CTLSerial;       // serial port for communicating with the onboad Arduino Nano
 
-char buff[M3S_BUFF_SIZE];      // receiver buffer
-char outb[128];                // send buffer
-boolean dir = true;            // comm direction. Read from nextion when true.
-boolean beep = false;           // whether to send a beep or not.
-boolean debug = false;         // verbose output
 const char M3S_TERM = 0xff;
-int loop_count;
+char buff[M3S_BUFF_SIZE];      // receiver buffer
+char outb[32];                 // send buffer
+
+boolean dir = true;            // comm direction. Read from nextion when true.
+boolean beep = false;          // whether to send a beep or not.
+boolean debug = false;         // verbose output
+boolean power = false;
+boolean attn = true;
+boolean transmit = false;
+uint8_t loop_count = 0;
+uint8_t band = 10;
+uint8_t ant = 1;
 
 // Variables to keep track of the amp state. Each state keeps a history of the length
 // defined by M3S_ST_WINDOW. If a newly added value is an outlier, it will still be
@@ -47,7 +53,6 @@ int loop_count;
 // vol[M3S_ST_WINDOW + 1] contains last known good value
 int vol[M3S_ST_WINDOW+2], cur[M3S_ST_WINDOW+2], swr[M3S_ST_WINDOW+2];
 int ref[M3S_ST_WINDOW+2], pwr[M3S_ST_WINDOW+2], tmp[M3S_ST_WINDOW+2];
-boolean transmit = false;
 
 // Prints to the USB serial port. Used to dump the captured commands
 // Control characters are printed in hex.
@@ -172,9 +177,11 @@ boolean updateState(char* buff, int len) {
       // the display might be left in inconsistent state.
       sendLcdMsg("tsw 255,1");
       resetLcdState();
+      return true;
     } else if (!strncmp(buff, "oa.picc=2", 9)) {
       transmit = true;
       digitalWrite(M3S_LED, HIGH);
+      return true;
     } else if (!strncmp(buff, "tsw 255,1", 9) && transmit) {
       // "oa.picc=1" is always immediately followed by "tsw 255,1". If we see this
       // and still in transmit mode, it must mean "oa.picc=1" was lost. 
@@ -182,6 +189,21 @@ boolean updateState(char* buff, int len) {
       digitalWrite(M3S_LED, LOW);
       sendLcdMsg("oa.picc=1");
       resetLcdState();
+      return true;
+    }
+  }
+
+  // antenna state update
+  if (len == 13) {
+    if (!strncmp(buff, "ant1.val=1", 10)) {
+      ant = 1;
+      return true;
+    } else if (!strncmp(buff, "ant2.val=1", 10)) {
+      ant = 2;
+      return true;
+    } else if (!strncmp(buff, "ant3.val=1", 10)) {
+      ant = 3;
+      return true;
     }
   }
   
@@ -236,11 +258,29 @@ boolean updateState(char* buff, int len) {
      }
      return true;
   }
+
+  
   return true;
 }
 
 void printStatus(boolean human_readable) {
   if (human_readable) {
+    Serial.print("Power          : ");
+    Serial.println((power) ? "on":"off");
+    Serial.print("Attenuator   : ");
+    Serial.println((attn) ? "on":"off");
+    Serial.print("Transmit       : ");
+    Serial.println((transmit) ? "yes":"no");
+    Serial.print("Band (auto=0)  : ");
+    Serial.println(band);
+    Serial.print("Antenna        : ");
+    Serial.println(ant);
+    Serial.print("Temperature(C) : ");
+    Serial.println(tmp[M3S_ST_VAL]);
+#ifdef M3S_SHOW_RAW_VALS
+    // The power levels and the drain current are translated in the
+    // display. The power level conversion is clearly non-linear.
+    // SWR and Voltage are straightforward 10x values.
     Serial.print("Output Power   : ");
     Serial.println(pwr[M3S_ST_VAL]);
     Serial.print("Reflected Power: ");
@@ -251,11 +291,15 @@ void printStatus(boolean human_readable) {
     Serial.println(vol[M3S_ST_VAL]);
     Serial.print("Drain Current  :");
     Serial.println(cur[M3S_ST_VAL]);
-    Serial.print("Temperature(C) : ");
-    Serial.println(tmp[M3S_ST_VAL]);
+#endif
   } else {
-    sprintf(outb, "%d %d %d %d %d %d", pwr[M3S_ST_VAL], ref[M3S_ST_VAL],
-        swr[M3S_ST_VAL], vol[M3S_ST_VAL], cur[M3S_ST_VAL], tmp[M3S_ST_VAL]);
+    sprintf(outb, "%d %d %d %d %d %d",
+        (power) ? 1:0,
+        (attn) ? 1:0,
+        (transmit) ? 1:0,
+        band,
+        ant,
+        tmp[M3S_ST_VAL]);
     Serial.println(outb);
   }
 }
@@ -419,34 +463,42 @@ void loop() {
       case 'a':
         sendCtrlMsg("pdia=160");
         setLcdBand(0);
+        band = 160;
         break;
       case 'b':
         sendCtrlMsg("pdia=80");
         setLcdBand(1);
+        band = 80;
         break;
       case 'c':
         sendCtrlMsg("pdia=40");
         setLcdBand(2);
+        band = 40;
         break;
       case 'd':
         sendCtrlMsg("pdia=20");
         setLcdBand(3);
+        band = 20;
         break;
       case 'e':
         sendCtrlMsg("pdia=15");
         setLcdBand(4);
+        band = 15;
         break;
       case 'f':
         sendCtrlMsg("pdia=10");
         setLcdBand(5);
+        band = 10;
         break;
       case 'g':
         sendCtrlMsg("pdia=6");
         setLcdBand(6);
+        band = 6;
         break;
       case 'h':
         setLcdBand(7);
         sendCtrlMsg("pdia=255");
+        band = 0;
         break;
       case 'i':
         printHelp();
@@ -455,10 +507,12 @@ void loop() {
       // power on
       case 'p':
         digitalWrite(M3S_PCTL, HIGH);
+        power = true;
         break;
       // power off
       case 'q':
         digitalWrite(M3S_PCTL, LOW);
+        power = false;
         break;
         
       // reset
@@ -501,10 +555,12 @@ void loop() {
       // attn off
       case 'x':
         digitalWrite(M3S_ATTN, HIGH);
+        attn = false;
         break;
       // attn on
       case 'y':
         digitalWrite(M3S_ATTN, LOW);
+        attn = true;
         break;
 
       // antenna selection
@@ -513,18 +569,21 @@ void loop() {
         sendLcdMsg("ant1.val=1");
         sendLcdMsg("ant2.val=0");
         sendLcdMsg("ant3.val=0");
+        ant = 1;
         break;
       case '2':
         sendCtrlMsg("ponant2");
         sendLcdMsg("ant1.val=0");
         sendLcdMsg("ant2.val=1");
         sendLcdMsg("ant3.val=0");
+        ant = 2;
         break;
       case '3':
         sendCtrlMsg("ponant3");
         sendLcdMsg("ant1.val=0");
         sendLcdMsg("ant2.val=0");
         sendLcdMsg("ant3.val=1");
+        ant = 3;
         break;
 
       // fan speed. LCD update is done by the controller.
